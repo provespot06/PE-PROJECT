@@ -67,8 +67,67 @@
     const sendBtn = document.getElementById('send-btn');
     const suggestionBtns = document.querySelectorAll('.suggestion-btn');
 
-    const OPENROUTER_API_KEY = "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";
-    const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+    // ---- CSV DATA LOADING ----
+    let QA = []; // {q, a}
+
+    function normalize(s) {
+      return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g,' ').trim();
+    }
+    function jaccard(a, b) {
+      const A = new Set(a.split(' '));
+      const B = new Set(b.split(' '));
+      let inter = 0;
+      A.forEach(x => { if (B.has(x)) inter++; });
+      const union = new Set([...A, ...B]).size;
+      return union ? inter / union : 0;
+    }
+    function substringBonus(a, b) {
+      return (a.includes(b) || b.includes(a)) ? 1 : 0;
+    }
+    function bestMatch(user) {
+      const u = normalize(user);
+      let best = {score: 0, idx: -1};
+      QA.forEach((item, i) => {
+        const qn = normalize(item.q);
+        const s = 0.7 * jaccard(qn, u) + 0.3 * substringBonus(qn, u);
+        if (s > best.score) best = {score: s, idx: i};
+      });
+      return (best.idx >= 0 && best.score >= 0.2) ? QA[best.idx] : null; // threshold tweakable
+    }
+    function parseCSV(text) {
+      const lines = text.split(/\r?\n/).filter(l => l.trim().length);
+      const header = lines.shift();
+      if (!/question/i.test(header) || !/answer/i.test(header)) return [];
+      const data = [];
+      for (const line of lines) {
+        const cols = line.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/); // split on commas not inside quotes
+        const q = (cols[0] || '').replace(/^"(.*)"$/,'$1').trim();
+        const a = (cols[1] || '').replace(/^"(.*)"$/,'$1').trim();
+        if (q && a) data.push({q, a});
+      }
+      return data;
+    }
+    async function loadCSV() {
+      try {
+        const res = await fetch('faq.csv', {cache: 'no-store'});
+        if (!res.ok) throw new Error('no csv');
+        const text = await res.text();
+        const rows = parseCSV(text);
+        if (rows.length) {
+          QA = rows;
+          return;
+        }
+        throw new Error('empty csv');
+      } catch (e) {
+        // fallback sample so UI works even without csv
+        QA = [
+          { q: "How can I improve my squat form?", a: "Keep chest up, brace core, push hips back, track knees over toes, weight on mid-foot/heels, squat to comfortable depth." },
+          { q: "What are some beginner yoga asanas?", a: "Mountain, Child’s Pose, Cat-Cow, Downward Dog, Warrior I, Tree Pose. Hold 3–5 breaths each." },
+          { q: "What should I eat before workout?", a: "1–2 hours before: carbs + a little protein (banana + yogurt, toast + peanut butter). Hydrate well." },
+          { q: "How to stay motivated to exercise?", a: "Set tiny goals, schedule workouts, track progress, find a buddy, and reward consistency." }
+        ];
+      }
+    }
 
     function addMessage(message, isUser = false) {
       const div = document.createElement('div');
@@ -97,27 +156,9 @@
     }
 
     async function getBotReply(msg) {
-      try {
-        const res = await fetch(OPENROUTER_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${OPENROUTER_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: "openrouter/openai/gpt-3.5-turbo",
-            messages: [
-              {role:"system", content:"You are a helpful AI fitness and health assistant."}, 
-              {role:"user", content:msg}
-            ]
-          })
-        });
-        const data = await res.json();
-        return data.choices?.[0]?.message?.content || "Sorry, I couldn’t understand.";
-      } catch(e) {
-        console.error(e);
-        return "Error connecting to API.";
-      }
+      const match = bestMatch(msg);
+      if (match) return match.a;
+      return "Sorry, I couldn’t find an exact answer in my FAQ. Try rephrasing?";
     }
 
     async function handleMessage() {
@@ -134,6 +175,9 @@
     sendBtn.addEventListener('click', handleMessage);
     userInput.addEventListener('keypress', e => { if(e.key==="Enter") handleMessage(); });
     suggestionBtns.forEach(b => b.addEventListener('click', ()=>{ userInput.value=b.dataset.query; handleMessage(); }));
+
+    // load CSV once ready
+    document.addEventListener('DOMContentLoaded', loadCSV);
   </script>
 </body>
 </html>
